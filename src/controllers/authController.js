@@ -40,6 +40,7 @@ exports.registerUser = async (req, res) => {
             role: 'staff',          // mặc định staff
             isActive: true,
             createdAt: new Date().toISOString(),
+            photoURL: '',
         });
 
         // Trả về thành công
@@ -50,6 +51,7 @@ exports.registerUser = async (req, res) => {
                 email,
                 fullName,
                 role: 'staff',
+                photoURL: '',
             },
         });
     } catch (err) {
@@ -81,6 +83,7 @@ exports.getMe = async (req, res) => {
             role: userData.role,
             isActive: userData.isActive,
             createdAt: userData.createdAt,
+            photoURL: userData.photoURL || '',
         });
     } catch (err) {
         res.status(500).json({ message: 'Lỗi server: ' + err.message });
@@ -94,6 +97,62 @@ exports.logout = async (req, res) => {
         // Tuy nhiên có thể ghi log hoặc thêm token vào blacklist ở đây.
         // Hiện tại chỉ trả về thành công.
         res.status(200).json({ message: 'Đăng xuất thành công' });
+    } catch (err) {
+        res.status(500).json({ message: 'Lỗi server: ' + err.message });
+    }
+};
+
+// Cập nhật thông tin cá nhân (fullName, phone, photoURL)
+exports.updateProfile = async (req, res) => {
+    try {
+        const uid = req.user.uid;
+        const { fullName, phone, photoURL } = req.body;
+
+        const updates = {};
+        if (fullName !== undefined) updates.fullName = fullName;
+        if (phone    !== undefined) updates.phone    = phone;
+        if (photoURL !== undefined) updates.photoURL = photoURL;
+
+        // Cập nhật displayName + photoURL trên Firebase Auth
+        const authUpdates = {};
+        if (fullName  !== undefined) authUpdates.displayName = fullName;
+        if (photoURL  !== undefined) authUpdates.photoURL    = photoURL;
+        if (Object.keys(authUpdates).length) {
+            await auth.updateUser(uid, authUpdates);
+        }
+
+        // Cập nhật Firestore
+        await db.collection('users').doc(uid).update({
+            ...updates,
+            updatedAt: new Date().toISOString(),
+        });
+
+        res.status(200).json({ message: 'Cập nhật thành công', updates });
+    } catch (err) {
+        res.status(500).json({ message: 'Lỗi server: ' + err.message });
+    }
+};
+
+// Reset mật khẩu (cần biết mật khẩu cũ để xác thực phía client trước, backend chỉ set mới)
+exports.resetPassword = async (req, res) => {
+    try {
+        const uid = req.user.uid;
+        const { newPassword } = req.body;
+
+        if (!newPassword) {
+            return res.status(400).json({ message: 'Thiếu mật khẩu mới' });
+        }
+
+        const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{8,}$/;
+        if (!PASSWORD_REGEX.test(newPassword)) {
+            return res.status(400).json({
+                message: 'Mật khẩu phải tối thiểu 8 ký tự, gồm cả chữ và số, không chứa ký tự đặc biệt',
+            });
+        }
+
+        await auth.updateUser(uid, { password: newPassword });
+
+        res.status(200).json({ message: 'Đổi mật khẩu thành công' });
     } catch (err) {
         res.status(500).json({ message: 'Lỗi server: ' + err.message });
     }
