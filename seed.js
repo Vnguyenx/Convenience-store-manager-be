@@ -1,7 +1,7 @@
 const { auth, db } = require('./src/config/firebase');
 
 const accounts = [
-    { email: 'admin@dt22m.com', password: 'Admin1234', fullName: 'Chủ cửa hàng', role: 'admin' },
+    { email: 'admin@dt22m.com', password: 'n', fullName: 'Chủ cửa hàng', role: 'admin' },
     { email: 'staff@dt22m.com', password: 'Staff1234', fullName: 'Nhân viên thu ngân', role: 'staff' },
 ];
 
