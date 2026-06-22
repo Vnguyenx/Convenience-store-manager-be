@@ -78,17 +78,19 @@ async function updateOrder(req, res) {
 /**
  * PATCH /api/orders/:orderCode/cancel
  * Body: { reason }
- * Chỉ admin được hủy đơn (check ở route bằng requireRole)
+ * Admin: huỷ được mọi đơn. Staff: chỉ huỷ được đơn do chính mình tạo
+ * (check quyền sở hữu nằm ở orderService.cancelOrder, dựa vào req.user).
  */
 async function cancelOrder(req, res) {
     try {
         const { orderCode } = req.params;
         const { reason } = req.body;
-        const cancelled = await orderService.cancelOrder(orderCode, reason);
+        const cancelled = await orderService.cancelOrder(orderCode, reason, req.user);
         return res.status(200).json({ success: true, data: cancelled });
     } catch (err) {
         console.error('cancelOrder error:', err.message);
-        return res.status(400).json({ success: false, message: err.message });
+        const status = err.message === 'Bạn không có quyền huỷ đơn hàng này' ? 403 : 400;
+        return res.status(status).json({ success: false, message: err.message });
     }
 }
 

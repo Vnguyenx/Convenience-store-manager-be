@@ -56,13 +56,13 @@ function randomDiscountPercent() {
 }
 
 async function updateProductFields() {
-    for (const code of Object.keys(updates)) {
+    for (const ID of Object.keys(updates)) {
         try {
-            const payload = { ...updates[code] };
+            const payload = { ...updates[ID] };
 
             // Nếu sản phẩm này thuộc danh sách discountPrice = null -> tự tính giá giảm
-            if (sellPriceMap[code] !== undefined) {
-                const sellPrice = sellPriceMap[code];
+            if (sellPriceMap[ID] !== undefined) {
+                const sellPrice = sellPriceMap[ID];
                 const percent = randomDiscountPercent();
                 const discountPrice = roundToHundred(sellPrice * (1 - percent));
                 payload.discountPrice = discountPrice;
@@ -70,10 +70,10 @@ async function updateProductFields() {
 
             payload.updatedAt = new Date().toISOString();
 
-            await db.collection('products').doc(code).update(payload);
-            console.log(`✅ Cập nhật thành công: ${code}`, payload);
+            await db.collection('products').doc(ID).update(payload);
+            console.log(`✅ Cập nhật thành công: ${ID}`, payload);
         } catch (err) {
-            console.error(`❌ Lỗi cập nhật ${code}:`, err.message);
+            console.error(`❌ Lỗi cập nhật ${ID}:`, err.message);
         }
     }
     process.exit(0);

@@ -13,6 +13,7 @@ router.use(verifyToken);
 router.post('/', orderController.createOrder);
 
 // Xem danh sách đơn hàng - admin & staff
+// (FE tự lọc theo cashierUID cho staff để chỉ xem đơn của mình)
 router.get('/', orderController.getOrders);
 
 // Xem chi tiết 1 đơn - admin & staff
@@ -21,8 +22,11 @@ router.get('/:orderCode', orderController.getOrderById);
 // Sửa đơn hàng (ví dụ sửa note, items trước khi in hóa đơn...) - admin & staff
 router.put('/:orderCode', orderController.updateOrder);
 
-// Hủy đơn hàng - chỉ admin (theo bảng độ ưu tiên: "Trả hàng/Đổi hàng" -> Duyệt do admin)
-router.patch('/:orderCode/cancel', requireRole('admin'), orderController.cancelOrder);
+// Hủy đơn hàng:
+// - admin: huỷ được mọi đơn
+// - staff: chỉ huỷ được đơn do chính mình tạo (check ownership trong orderService.cancelOrder)
+// -> KHÔNG dùng requireRole('admin') ở đây nữa, để staff cũng gọi được route này.
+router.patch('/:orderCode/cancel', orderController.cancelOrder);
 
 // Xóa cứng đơn hàng - chỉ admin, hạn chế dùng
 router.delete('/:orderCode', requireRole('admin'), orderController.deleteOrder);
