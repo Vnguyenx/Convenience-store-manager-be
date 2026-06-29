@@ -3,6 +3,7 @@ const { auth, db } = require('./src/config/firebase');
 const accounts = [
     { email: 'admin@dt22m.com', password: 'Admin1234', fullName: 'Chủ cửa hàng', role: 'admin' },
     { email: 'staff@dt22m.com', password: 'Staff1234', fullName: 'Nhân viên thu ngân', role: 'staff' },
+    { email: 'viet123@gmail.com', password: 'viet11111',  role: 'staff' },
 ];
 
 async function seed() {

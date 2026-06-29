@@ -220,6 +220,11 @@ exports.updatePayroll = async (req, res) => {
         const newBonus     = bonus     !== undefined ? Number(bonus)     : current.bonus;
         const newDeduction = deduction !== undefined ? Number(deduction) : current.deduction;
 
+        if (bonus !== undefined && (isNaN(newBonus) || newBonus < 0))
+            return res.status(400).json({ message: 'bonus phải là số không âm' });
+        if (deduction !== undefined && (isNaN(newDeduction) || newDeduction < 0))
+            return res.status(400).json({ message: 'deduction phải là số không âm' });
+
         const updates = {
             bonus: newBonus,
             deduction: newDeduction,

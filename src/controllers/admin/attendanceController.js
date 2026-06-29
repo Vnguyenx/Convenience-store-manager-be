@@ -26,10 +26,27 @@ function todayVN() {
  * POST /attendance/check-in
  * Staff tự check-in cho hôm nay
  */
+const NOTE_MAX_LENGTH = 200;
+const ALLOW_EARLY_MINUTES = 15; // phút
+
+// Helper chuyển "HH:mm" thành số phút trong ngày
+function timeToMinutes(timeStr) {
+    const [h, m] = timeStr.split(':').map(Number);
+    return h * 60 + m;
+}
+
+// ── Staff: tự chấm công ───────────────────────────────────────────────────────
+
 exports.checkIn = async (req, res) => {
     try {
         const uid  = req.user.uid;
         const date = todayVN();
+        const note = req.body.note || '';
+
+        // Validate note
+        if (note.length > NOTE_MAX_LENGTH) {
+            return res.status(400).json({ message: `Ghi chú không được vượt quá ${NOTE_MAX_LENGTH} ký tự` });
+        }
 
         // Kiểm tra đã check-in hôm nay chưa
         const existing = await db.collection('attendances')
@@ -40,16 +57,56 @@ exports.checkIn = async (req, res) => {
         if (!existing.empty)
             return res.status(409).json({ message: 'Bạn đã check-in hôm nay rồi' });
 
-        // Kiểm tra có phân ca hôm nay không (không bắt buộc, chỉ lấy để liên kết)
+        // ── BẮT BUỘC CÓ PHÂN CA HÔM NAY ──
         const assignSnap = await db.collection('shiftAssignments')
             .where('staffUid', '==', uid)
             .where('date', '==', date)
             .where('status', '==', 'scheduled')
             .limit(1).get();
 
-        const assignmentId = assignSnap.empty ? null : assignSnap.docs[0].id;
-        const now = new Date().toISOString();
+        if (assignSnap.empty) {
+            return res.status(403).json({ message: 'Bạn không có ca làm việc hôm nay, không thể check-in' });
+        }
 
+        const assignmentId = assignSnap.docs[0].id;
+        const assignmentData = assignSnap.docs[0].data();
+
+        // Lấy thông tin ca làm việc
+        const shiftDoc = await db.collection('shifts').doc(assignmentData.shiftId).get();
+        if (!shiftDoc.exists) {
+            return res.status(404).json({ message: 'Ca làm việc không tồn tại' });
+        }
+        const shift = shiftDoc.data();
+
+        // Kiểm tra ca có đang hoạt động
+        if (shift.isActive === false) {
+            return res.status(403).json({ message: 'Ca làm việc đã bị vô hiệu hóa' });
+        }
+
+        // ── KIỂM TRA GIỜ CHECK-IN ──
+        const startMinutes = timeToMinutes(shift.startTime);
+        const endMinutes = timeToMinutes(shift.endTime);
+
+        // Lấy giờ hiện tại theo múi giờ VN
+        const nowVN = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+        const currentMinutes = nowVN.getHours() * 60 + nowVN.getMinutes();
+
+        // Cho phép check-in sớm tối đa 15 phút
+        if (currentMinutes < startMinutes - ALLOW_EARLY_MINUTES) {
+            return res.status(403).json({
+                message: `Chưa đến giờ check-in. Bạn có thể check-in từ ${shift.startTime} (sớm nhất ${ALLOW_EARLY_MINUTES} phút)`
+            });
+        }
+
+        // Không cho check-in sau giờ kết thúc ca
+        if (currentMinutes > endMinutes) {
+            return res.status(403).json({
+                message: `Ca làm việc đã kết thúc lúc ${shift.endTime}. Không thể check-in`
+            });
+        }
+
+        // ── TẠO BẢN GHI CHẤM CÔNG ──
+        const now = new Date().toISOString();
         const ref = await db.collection('attendances').add({
             staffUid: uid,
             assignmentId,
@@ -57,7 +114,7 @@ exports.checkIn = async (req, res) => {
             checkIn: now,
             checkOut: null,
             hoursWorked: null,
-            note: req.body.note || '',
+            note: note,
             createdAt: now,
             updatedAt: now,
         });
@@ -76,6 +133,11 @@ exports.checkOut = async (req, res) => {
     try {
         const uid  = req.user.uid;
         const date = todayVN();
+        const note = req.body.note || '';
+
+        if (note.length > NOTE_MAX_LENGTH) {
+            return res.status(400).json({ message: `Ghi chú không được vượt quá ${NOTE_MAX_LENGTH} ký tự` });
+        }
 
         const snap = await db.collection('attendances')
             .where('staffUid', '==', uid)
