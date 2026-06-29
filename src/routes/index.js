@@ -9,6 +9,7 @@ const couponRoutes = require('./couponRoutes');
 const staffRoutes   = require('./staffRoutes');
 const inventoryRoutes = require('./inventoryRoutes');
 const purchaseOrderRoutes = require('./purchaseOrderRoutes');
+const statisticsRoutes = require('./statisticsRoutes');
 
 
 
@@ -20,5 +21,6 @@ router.use('/coupons', couponRoutes);
 router.use('/admin',    staffRoutes);
 router.use('/admin', inventoryRoutes);
 router.use('/admin', purchaseOrderRoutes);
+router.use('/admin', statisticsRoutes);
 
 module.exports = router;

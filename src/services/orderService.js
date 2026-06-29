@@ -24,13 +24,26 @@ async function getUserFullName(uid) {
     }
 }
 
+// FIX: Thêm hàm tính discount dựa trên coupon
+function calculateCouponDiscount(couponData, subtotal) {
+    if (!couponData) return 0;
+    let discount = 0;
+    if (couponData.type === 'percentage') {
+        discount = (subtotal * couponData.value) / 100;
+    } else if (couponData.type === 'fixed') {
+        discount = couponData.value;
+    }
+    // Không giảm quá subtotal
+    return Math.min(discount, subtotal);
+}
+
 async function createOrder(payload) {
     const {
         items,
-        subtotal,
+        subtotal: clientSubtotal,        // FIX: lưu tạm để so sánh nếu cần, nhưng không dùng
         coupon = null,
-        couponDiscount = 0,
-        total,
+        couponDiscount: clientCouponDiscount, // FIX: không dùng
+        total: clientTotal,
         paymentMethod,
         cashierUID,
         customerNote = '',
@@ -43,28 +56,60 @@ async function createOrder(payload) {
         throw new Error('Thiếu phương thức thanh toán');
     }
 
+    // FIX: Validate từng item
+    for (const item of items) {
+        if (!item.id || typeof item.id !== 'string') {
+            throw new Error('Mỗi sản phẩm phải có ID hợp lệ');
+        }
+        if (!item.name) {
+            throw new Error('Mỗi sản phẩm phải có tên');
+        }
+        // FIX: quantity phải là số nguyên dương
+        const qty = Number(item.quantity);
+        if (!Number.isInteger(qty) || qty <= 0) {
+            throw new Error(`Sản phẩm "${item.name}" có số lượng không hợp lệ (phải là số nguyên dương)`);
+        }
+        // FIX: unitPrice phải là số dương
+        const price = Number(item.unitPrice);
+        if (isNaN(price) || price < 0) {
+            throw new Error(`Sản phẩm "${item.name}" có giá không hợp lệ`);
+        }
+        // FIX: discountPrice nếu có phải >= 0
+        if (item.discountPrice !== undefined && item.discountPrice !== null) {
+            const disc = Number(item.discountPrice);
+            if (isNaN(disc) || disc < 0) {
+                throw new Error(`Sản phẩm "${item.name}" có giá giảm không hợp lệ`);
+            }
+        }
+    }
+
+    // FIX: Ta sẽ tự tính subtotal, couponDiscount, total ở server
+    let computedSubtotal = 0;
+    // Tính subtotal từ items (dùng unitPrice, chưa trừ discount)
+    for (const item of items) {
+        const qty = Number(item.quantity);
+        const price = Number(item.unitPrice);
+        computedSubtotal += price * qty;
+    }
+
+    // FIX: Bỏ qua couponDiscount client gửi, sẽ tính lại sau khi có couponData
+    // Lưu ý: vẫn giữ logic kiểm tra coupon trong transaction
+
     const orderCode = generateOrderCode();
     const cashierName = await getUserFullName(cashierUID);
 
+    // Tạo orderData cơ bản, chưa có items (sẽ gán sau), và chưa có subtotal/total
     const orderData = {
         orderCode,
         status: 'completed',
         paymentMethod,
         cashierUID: cashierUID || 'anonymous',
         cashierName,
-        subtotal: Number(subtotal) || 0,
-        couponDiscount: Number(couponDiscount) || 0,
-        total: Number(total) || 0,
-        coupon: coupon
-            ? { id: coupon.id, code: coupon.code, type: coupon.type, value: coupon.value }
-            : null,
-        items: items.map((i) => ({
-            id: i.id,
-            name: i.name,
-            unitPrice: i.unitPrice,
-            discountPrice: i.discountPrice ?? null,
-            quantity: i.quantity,
-        })),
+        subtotal: 0,          // sẽ gán sau
+        couponDiscount: 0,    // sẽ gán sau
+        total: 0,             // sẽ gán sau
+        coupon: null,
+        items: [],
         customerNote,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -110,18 +155,49 @@ async function createOrder(payload) {
         // 3. Kiểm tra tồn kho
         items.forEach((item, idx) => {
             const stock = productSnaps[idx].data().stockQuantity ?? 0;
-            if (stock < item.quantity) {
+            const qty = Number(item.quantity);
+            if (stock < qty) {
                 throw new Error(`Sản phẩm "${item.name}" không đủ tồn kho (còn ${stock})`);
             }
         });
 
-        // 4. Ghi order
+        // FIX: Tính lại couponDiscount dựa trên subtotal vừa tính và couponData
+        const computedCouponDiscount = calculateCouponDiscount(couponData, computedSubtotal);
+        const computedTotal = computedSubtotal - computedCouponDiscount;
+
+        // FIX: (Tùy chọn) So sánh với client gửi để log cảnh báo nếu lệch nhiều, nhưng vẫn dùng giá trị tự tính
+        // Ở đây ta bỏ qua client values, chỉ dùng computed
+
+        // 4. Gắn costPrice và xây dựng items cho order
+        orderData.items = items.map((item, idx) => ({
+            id: item.id,
+            name: item.name,
+            unitPrice: Number(item.unitPrice),
+            discountPrice: item.discountPrice != null ? Number(item.discountPrice) : null,
+            quantity: Number(item.quantity),
+            costPrice: productSnaps[idx].data().importPrice ?? null,
+        }));
+
+        // FIX: Gán các giá trị đã tính lại
+        orderData.subtotal = computedSubtotal;
+        orderData.couponDiscount = computedCouponDiscount;
+        orderData.total = computedTotal;
+        if (couponData) {
+            orderData.coupon = {
+                id: coupon.id,
+                code: couponData.code,
+                type: couponData.type,
+                value: couponData.value,
+            };
+        }
+
+        // Lưu đơn hàng
         transaction.set(orderRef, orderData);
 
         // 5. Trừ kho
         items.forEach((item, idx) => {
             transaction.update(productRefs[idx], {
-                stockQuantity: FieldValue.increment(-item.quantity),
+                stockQuantity: FieldValue.increment(-Number(item.quantity)),
                 updatedAt: new Date().toISOString(),
             });
         });
@@ -218,17 +294,22 @@ async function cancelOrder(orderCode, reason = '', requestingUser = null) {
         const productRefs = [];
         const productSnaps = [];
         for (const item of items) {
+            // FIX: kiểm tra item.id tồn tại trước khi query
+            if (!item.id) {
+                // nếu không có id thì bỏ qua, không khôi phục kho
+                productRefs.push(null);
+                productSnaps.push(null);
+                continue;
+            }
             const query = db.collection(PRODUCTS_COLLECTION)
                 .where('ID', '==', item.id)
                 .limit(1);
             const snap = await transaction.get(query);
-            // Nếu sản phẩm đã bị xoá thì bỏ qua khi khôi phục kho
             if (!snap.empty) {
                 const doc = snap.docs[0];
                 productRefs.push(doc.ref);
                 productSnaps.push(doc);
             } else {
-                // vẫn push null để giữ vị trí tương ứng với items, nhưng bỏ qua cập nhật
                 productRefs.push(null);
                 productSnaps.push(null);
             }
@@ -255,7 +336,7 @@ async function cancelOrder(orderCode, reason = '', requestingUser = null) {
         items.forEach((item, idx) => {
             if (productRefs[idx]) {
                 transaction.update(productRefs[idx], {
-                    stockQuantity: FieldValue.increment(item.quantity),
+                    stockQuantity: FieldValue.increment(item.quantity || 0),
                     updatedAt: new Date().toISOString(),
                 });
             }
