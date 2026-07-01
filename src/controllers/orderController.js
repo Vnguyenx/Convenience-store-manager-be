@@ -19,12 +19,15 @@ async function createOrder(req, res) {
             paymentMethod,
             customerNote,
             cashierUID: req.user?.uid || 'anonymous',
+            requestingUser: req.user, // FIX: dùng để check role + đang trong ca hay không
         });
 
         return res.status(201).json({ success: true, data: order });
     } catch (err) {
         console.error('createOrder error:', err.message);
-        return res.status(400).json({ success: false, message: err.message });
+        // FIX: trả 403 riêng khi staff chưa check-in ca làm việc
+        const status = err.message === 'Bạn cần check-in ca làm việc trước khi bán hàng' ? 403 : 400;
+        return res.status(status).json({ success: false, message: err.message });
     }
 }
 

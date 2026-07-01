@@ -2,12 +2,13 @@
 const { db } = require('../../config/firebase');
 
 // Collection: payrollConfig
-// Document ID: "default" (hoặc theo staffUid để có mức lương riêng)
+// Document ID: "default" | "tier_excellent" | "tier_normal" | <staffUid>
 // {
-//   staffUid: string | "default",
+//   staffUid: string,      // giá trị = document ID (default / tier_xxx / uid)
 //   hourlyRate: number,    VD: 25000 (VNĐ/giờ)
 //   updatedAt: string
 // }
+// Thứ tự ưu tiên khi tính lương: <staffUid riêng> > tier_<tier của staff> > default
 
 // Collection: payrolls
 // Document: {
@@ -28,11 +29,13 @@ const { db } = require('../../config/firebase');
 const MONTH_REGEX = /^\d{4}-(0[1-9]|1[0-2])$/;
 function validateMonth(m) { return MONTH_REGEX.test(m); }
 
+const VALID_TIERS = ['excellent', 'normal']; // FIX: đồng bộ với staffController
+
 // ── Config lương ─────────────────────────────────────────────────────────────
 
 /**
  * GET /admin/payroll/config
- * Lấy tất cả cấu hình lương (default + riêng từng staff)
+ * Lấy tất cả cấu hình lương (default + theo tier + riêng từng staff)
  */
 exports.getPayrollConfigs = async (req, res) => {
     try {
@@ -46,7 +49,10 @@ exports.getPayrollConfigs = async (req, res) => {
 
 /**
  * PUT /admin/payroll/config/:staffUidOrDefault
- * Đặt mức lương theo giờ cho 1 nhân viên hoặc mức mặc định
+ * Đặt mức lương theo giờ cho:
+ *  - "default"          → mức mặc định chung
+ *  - "tier_excellent" / "tier_normal" → mức theo xếp loại nhân viên   // FIX
+ *  - <staffUid>          → mức riêng cho 1 nhân viên (ưu tiên cao nhất)
  * Body: { hourlyRate }
  */
 exports.setPayrollConfig = async (req, res) => {
@@ -57,8 +63,14 @@ exports.setPayrollConfig = async (req, res) => {
         if (hourlyRate === undefined || isNaN(Number(hourlyRate)) || Number(hourlyRate) < 0)
             return res.status(400).json({ message: 'hourlyRate phải là số không âm' });
 
-        // Nếu không phải "default" thì kiểm tra staff có tồn tại không
-        if (staffUidOrDefault !== 'default') {
+        // FIX: hỗ trợ key dạng "tier_excellent" / "tier_normal"
+        const isTierKey = staffUidOrDefault.startsWith('tier_');
+        if (isTierKey) {
+            const tier = staffUidOrDefault.replace('tier_', '');
+            if (!VALID_TIERS.includes(tier))
+                return res.status(400).json({ message: `tier phải là: ${VALID_TIERS.join(', ')}` });
+        } else if (staffUidOrDefault !== 'default') {
+            // Nếu không phải "default" hay "tier_xxx" thì kiểm tra staff có tồn tại không
             const staffDoc = await db.collection('users').doc(staffUidOrDefault).get();
             if (!staffDoc.exists)
                 return res.status(404).json({ message: 'Không tìm thấy nhân viên' });
@@ -113,18 +125,29 @@ exports.calculatePayroll = async (req, res) => {
             hoursMap[d.staffUid] += d.hoursWorked || 0;
         }
 
-        // Lấy config lương
+        // Lấy config lương (default, tier_xxx, và theo từng staffUid riêng)
         const configSnap = await db.collection('payrollConfig').get();
         const configMap = {};
         configSnap.docs.forEach(d => { configMap[d.id] = d.data().hourlyRate; });
         const defaultRate = configMap['default'] ?? 0;
+
+        // FIX: lấy tier của từng staff có giờ công trong tháng
+        const staffUids = Object.keys(hoursMap);
+        const tierEntries = await Promise.all(staffUids.map(async (uid) => {
+            const userDoc = await db.collection('users').doc(uid).get();
+            const tier = userDoc.exists ? (userDoc.data().tier || 'normal') : 'normal';
+            return [uid, tier];
+        }));
+        const staffTierMap = Object.fromEntries(tierEntries);
 
         const now = new Date().toISOString();
         const batch = db.batch();
         const results = [];
 
         for (const [uid, totalHours] of Object.entries(hoursMap)) {
-            const hourlyRate = configMap[uid] ?? defaultRate;
+            // FIX: thứ tự ưu tiên rate: staffUid riêng > tier > default
+            const tier = staffTierMap[uid];
+            const hourlyRate = configMap[uid] ?? configMap[`tier_${tier}`] ?? defaultRate;
             const baseSalary = parseFloat((totalHours * hourlyRate).toFixed(0));
 
             // Kiểm tra đã có payroll chưa
@@ -174,6 +197,10 @@ exports.calculatePayroll = async (req, res) => {
  * GET /admin/payroll
  * Lấy danh sách bảng lương
  * Query: ?month=2026-06&staffUid=xxx&status=draft|confirmed|paid
+ *
+ * LƯU Ý: truy vấn kết hợp (month + status, hoặc month + staffUid, v.v.) cần
+ * composite index trên Firestore. Nếu gặp lỗi 500 "FAILED_PRECONDITION",
+ * mở log server để lấy link tạo index trong Firebase Console.
  */
 exports.getPayrolls = async (req, res) => {
     try {

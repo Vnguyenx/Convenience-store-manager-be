@@ -5,10 +5,11 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{8,}$/;
 const PHONE_REGEX = /^(0|\+84)[0-9]{9}$/;
 const VALID_ROLES = ['admin', 'staff'];
+const VALID_TIERS = ['excellent', 'normal']; // FIX: nhân viên ưu tú / thường
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function validateStaffInput({ email, fullName, phone, role }) {
+function validateStaffInput({ email, fullName, phone, role, tier }) {
     const errors = [];
     if (!email || !EMAIL_REGEX.test(email))
         errors.push('Email không hợp lệ');
@@ -18,6 +19,8 @@ function validateStaffInput({ email, fullName, phone, role }) {
         errors.push('Số điện thoại không hợp lệ (VD: 0912345678)');
     if (role && !VALID_ROLES.includes(role))
         errors.push(`Vai trò phải là một trong: ${VALID_ROLES.join(', ')}`);
+    if (tier && !VALID_TIERS.includes(tier)) // FIX
+        errors.push(`Xếp loại phải là một trong: ${VALID_TIERS.join(', ')}`);
     return errors;
 }
 
@@ -71,9 +74,10 @@ exports.getStaffById = async (req, res) => {
 /**
  * POST /admin/staff
  * Tạo nhân viên mới (admin tạo thay cho staff)
+ * Body: { email, password, fullName, phone, role?, tier? }
  */
 exports.createStaff = async (req, res) => {
-    const { email, password, fullName, phone, role = 'staff' } = req.body;
+    const { email, password, fullName, phone, role = 'staff', tier = 'normal' } = req.body; // FIX: nhận tier
 
     if (!password)
         return res.status(400).json({ message: 'Thiếu mật khẩu' });
@@ -82,7 +86,7 @@ exports.createStaff = async (req, res) => {
             message: 'Mật khẩu phải tối thiểu 8 ký tự, gồm cả chữ và số, không chứa ký tự đặc biệt',
         });
 
-    const errors = validateStaffInput({ email, fullName, phone, role });
+    const errors = validateStaffInput({ email, fullName, phone, role, tier }); // FIX
     if (errors.length) return res.status(400).json({ message: errors.join('; ') });
 
     try {
@@ -94,6 +98,7 @@ exports.createStaff = async (req, res) => {
             fullName: fullName.trim(),
             phone: phone || '',
             role,
+            tier, // FIX: lưu xếp loại nhân viên
             isActive: true,
             photoURL: '',
             createdAt: now,
@@ -102,7 +107,7 @@ exports.createStaff = async (req, res) => {
 
         res.status(201).json({
             message: 'Tạo nhân viên thành công',
-            user: { uid: userRecord.uid, email, fullName, role },
+            user: { uid: userRecord.uid, email, fullName, role, tier }, // FIX
         });
     } catch (err) {
         if (err.code === 'auth/email-already-exists')
@@ -113,12 +118,12 @@ exports.createStaff = async (req, res) => {
 
 /**
  * PUT /admin/staff/:uid
- * Cập nhật thông tin nhân viên (fullName, phone, role, isActive)
+ * Cập nhật thông tin nhân viên (fullName, phone, role, isActive, tier)
  */
 exports.updateStaff = async (req, res) => {
     try {
         const { uid } = req.params;
-        const { fullName, phone, role, isActive } = req.body;
+        const { fullName, phone, role, isActive, tier } = req.body; // FIX: nhận tier
 
         const doc = await db.collection('users').doc(uid).get();
         if (!doc.exists)
@@ -133,6 +138,7 @@ exports.updateStaff = async (req, res) => {
             fullName: fullName ?? doc.data().fullName,
             phone: phone ?? doc.data().phone,
             role: role ?? doc.data().role,
+            tier: tier ?? doc.data().tier, // FIX
         });
         if (errors.length) return res.status(400).json({ message: errors.join('; ') });
 
@@ -141,6 +147,7 @@ exports.updateStaff = async (req, res) => {
         if (phone     !== undefined) updates.phone     = phone;
         if (role      !== undefined) updates.role      = role;
         if (isActive  !== undefined) updates.isActive  = Boolean(isActive);
+        if (tier      !== undefined) updates.tier      = tier; // FIX
 
         await db.collection('users').doc(uid).update(updates);
 

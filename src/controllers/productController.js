@@ -1,4 +1,6 @@
 const { db } = require('../config/firebase');
+const productService = require('../services/productService');
+const settingsService = require('../services/settingsService');
 
 const COLLECTION = 'products';
 
@@ -43,7 +45,12 @@ exports.getAllProducts = async (req, res) => {
     try {
         const snapshot = await db.collection(COLLECTION).orderBy('createdAt', 'desc').get();
         const products = snapshot.docs.map((doc) => ({ docId: doc.id, ...doc.data() }));
-        res.json({ products });
+
+        // ✅ Lấy tier 1 LẦN (có cache RAM 5 phút trong settingsService), rồi dùng cho toàn bộ list
+        const tiers = await settingsService.getExpiryDiscountTiers();
+        const enriched = products.map((p) => productService.enrichWithExpiryInfo(p, tiers));
+
+        res.json({ products: enriched });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -53,7 +60,40 @@ exports.getProductById = async (req, res) => {
     try {
         const doc = await db.collection(COLLECTION).doc(req.params.id).get();
         if (!doc.exists) return res.status(404).json({ message: 'Không tìm thấy sản phẩm' });
-        res.json({ product: { docId: doc.id, ...doc.data() } });
+
+        const tiers = await settingsService.getExpiryDiscountTiers();
+        const product = productService.enrichWithExpiryInfo({ docId: doc.id, ...doc.data() }, tiers);
+        res.json({ product });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+};
+
+// ✅ MỚI: GET /api/products/near-expiry
+// Danh sách sản phẩm cận hạn (còn hạn nhưng sắp hết) — dùng cho tab riêng ở trang quản lý
+exports.getNearExpiryProducts = async (req, res) => {
+    try {
+        const snapshot = await db.collection(COLLECTION).get();
+        const products = snapshot.docs.map((doc) => ({ docId: doc.id, ...doc.data() }));
+
+        const tiers = await settingsService.getExpiryDiscountTiers();
+        const nearExpiry = productService.filterNearExpiry(products, tiers);
+        res.json({ products: nearExpiry });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+};
+
+// ✅ MỚI: GET /api/products/expired
+// Danh sách sản phẩm đã hết hạn — dùng để cảnh báo/huỷ hàng, KHÔNG dùng để bán
+exports.getExpiredProducts = async (req, res) => {
+    try {
+        const snapshot = await db.collection(COLLECTION).get();
+        const products = snapshot.docs.map((doc) => ({ docId: doc.id, ...doc.data() }));
+
+        const tiers = await settingsService.getExpiryDiscountTiers();
+        const expired = productService.filterExpired(products, tiers);
+        res.json({ products: expired });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -118,7 +158,9 @@ exports.updateProduct = async (req, res) => {
         await docRef.update({ ...updateFields, updatedAt: now });
 
         const updatedDoc = await docRef.get();
-        res.json({ message: 'Cập nhật sản phẩm thành công', product: { docId, ...updatedDoc.data() } });
+        const tiers = await settingsService.getExpiryDiscountTiers();
+        const product = productService.enrichWithExpiryInfo({ docId, ...updatedDoc.data() }, tiers);
+        res.json({ message: 'Cập nhật sản phẩm thành công', product });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -132,6 +174,46 @@ exports.deleteProduct = async (req, res) => {
 
         await docRef.delete();
         res.json({ message: `Xóa sản phẩm "${doc.data().ID}" thành công` });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+};
+
+// ✅ MỚI: PATCH /api/products/:id/write-off
+// Huỷ hàng hết hạn/hư hỏng — giảm stockQuantity, KHÔNG xoá sản phẩm khỏi hệ thống
+exports.writeOffProduct = async (req, res) => {
+    const { quantity, reason } = req.body;
+
+    if (!quantity || quantity <= 0) {
+        return res.status(400).json({ message: 'Số lượng huỷ phải lớn hơn 0' });
+    }
+
+    try {
+        const docRef = db.collection(COLLECTION).doc(req.params.id);
+        const doc = await docRef.get();
+        if (!doc.exists) return res.status(404).json({ message: 'Không tìm thấy sản phẩm' });
+
+        const product = doc.data();
+        const currentStock = product.stockQuantity ?? 0;
+        const writeOffQty = Math.min(quantity, currentStock);
+
+        await docRef.update({
+            stockQuantity: currentStock - writeOffQty,
+            updatedAt: new Date().toISOString(),
+        });
+
+        // Ghi log hao hụt để phục vụ báo cáo thống kê sau này
+        await db.collection('stockWriteOffs').add({
+            productDocId: req.params.id,
+            productID: product.ID,
+            productName: product.name,
+            quantity: writeOffQty,
+            reason: reason || 'expired',
+            createdAt: new Date().toISOString(),
+            createdBy: req.user?.uid ?? null, // nếu có middleware auth gắn req.user
+        });
+
+        res.json({ message: `Đã huỷ ${writeOffQty} ${product.unit || 'sản phẩm'} "${product.name}"` });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }

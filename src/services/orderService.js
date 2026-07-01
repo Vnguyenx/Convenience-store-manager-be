@@ -1,11 +1,13 @@
 // src/services/orderService.js
 const { db } = require('../config/firebase');
 const { FieldValue } = require('firebase-admin/firestore');
+const productService = require('./productService');
 
 const ORDERS_COLLECTION = 'orders';
 const COUPONS_COLLECTION = 'coupons';
 const PRODUCTS_COLLECTION = 'products';
 const USERS_COLLECTION = 'users';
+const ATTENDANCES_COLLECTION = 'attendances'; // FIX
 
 function generateOrderCode() {
     const ts = Date.now().toString().slice(-5);
@@ -37,6 +39,21 @@ function calculateCouponDiscount(couponData, subtotal) {
     return Math.min(discount, subtotal);
 }
 
+// FIX: Kiểm tra staff có đang trong ca làm việc hôm nay không
+// (đã check-in, chưa check-out). Dùng để chặn bán hàng ngoài giờ ca.
+async function isCurrentlyOnShift(uid) {
+    if (!uid || uid === 'anonymous') return false;
+    const date = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }); // YYYY-MM-DD
+    const snap = await db.collection(ATTENDANCES_COLLECTION)
+        .where('staffUid', '==', uid)
+        .where('date', '==', date)
+        .limit(1)
+        .get();
+    if (snap.empty) return false;
+    const data = snap.docs[0].data();
+    return !!data.checkIn && !data.checkOut;
+}
+
 async function createOrder(payload) {
     const {
         items,
@@ -47,6 +64,7 @@ async function createOrder(payload) {
         paymentMethod,
         cashierUID,
         customerNote = '',
+        requestingUser = null, // FIX: dùng để check role + quyền vào ca
     } = payload;
 
     if (!Array.isArray(items) || items.length === 0) {
@@ -54,6 +72,15 @@ async function createOrder(payload) {
     }
     if (!paymentMethod) {
         throw new Error('Thiếu phương thức thanh toán');
+    }
+
+    // FIX: Staff phải đang trong ca (đã check-in, chưa check-out) mới được bán hàng.
+    // Admin không bị ràng buộc bởi ca làm việc.
+    if (requestingUser && requestingUser.role !== 'admin') {
+        const onShift = await isCurrentlyOnShift(cashierUID);
+        if (!onShift) {
+            throw new Error('Bạn cần check-in ca làm việc trước khi bán hàng');
+        }
     }
 
     // FIX: Validate từng item
@@ -134,7 +161,13 @@ async function createOrder(payload) {
             productSnaps.push(doc);
         }
 
-        // 2. Kiểm tra coupon (nếu có)
+        // 2. ✅ Chặn bán hàng đã hết hạn — kiểm tra ngay sau khi có dữ liệu sản phẩm thật từ DB
+        //    (không tin item.name/expiryDate mà client gửi lên, luôn đọc lại từ productSnaps)
+        productSnaps.forEach((doc, idx) => {
+            productService.assertNotExpired(doc.data());
+        });
+
+        // 3. Kiểm tra coupon (nếu có)
         let couponRef = null;
         let couponData = null;
         if (coupon?.id) {
@@ -152,7 +185,7 @@ async function createOrder(payload) {
             }
         }
 
-        // 3. Kiểm tra tồn kho
+        // 4. Kiểm tra tồn kho
         items.forEach((item, idx) => {
             const stock = productSnaps[idx].data().stockQuantity ?? 0;
             const qty = Number(item.quantity);
@@ -168,7 +201,7 @@ async function createOrder(payload) {
         // FIX: (Tùy chọn) So sánh với client gửi để log cảnh báo nếu lệch nhiều, nhưng vẫn dùng giá trị tự tính
         // Ở đây ta bỏ qua client values, chỉ dùng computed
 
-        // 4. Gắn costPrice và xây dựng items cho order
+        // 5. Gắn costPrice và xây dựng items cho order
         orderData.items = items.map((item, idx) => ({
             id: item.id,
             name: item.name,
@@ -194,7 +227,7 @@ async function createOrder(payload) {
         // Lưu đơn hàng
         transaction.set(orderRef, orderData);
 
-        // 5. Trừ kho
+        // 6. Trừ kho
         items.forEach((item, idx) => {
             transaction.update(productRefs[idx], {
                 stockQuantity: FieldValue.increment(-Number(item.quantity)),
@@ -202,7 +235,7 @@ async function createOrder(payload) {
             });
         });
 
-        // 6. Tăng usedCount coupon
+        // 7. Tăng usedCount coupon
         if (couponRef) {
             transaction.update(couponRef, {
                 usedCount: FieldValue.increment(1),

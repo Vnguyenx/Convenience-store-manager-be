@@ -10,6 +10,7 @@ const staffRoutes   = require('./staffRoutes');
 const inventoryRoutes = require('./inventoryRoutes');
 const purchaseOrderRoutes = require('./purchaseOrderRoutes');
 const statisticsRoutes = require('./statisticsRoutes');
+const settingsRoutes = require('./settingsRoutes');
 
 
 
@@ -22,5 +23,6 @@ router.use('/admin',    staffRoutes);
 router.use('/admin', inventoryRoutes);
 router.use('/admin', purchaseOrderRoutes);
 router.use('/admin', statisticsRoutes);
+router.use('/admin/settings', settingsRoutes);
 
 module.exports = router;
